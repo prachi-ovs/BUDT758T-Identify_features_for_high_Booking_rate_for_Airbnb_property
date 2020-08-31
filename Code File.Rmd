@@ -1,0 +1,1051 @@
+---
+title: "Team 10 AirBnB- New York Market"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+COVER PAGE
+
+# Data Mining and Predictive Analytics
+
+## Project title: Exploratory and Predictive Analysis Of Airbnb Data
+
+### Market assigned to the team: New York City
+
+*"We, the undersigned, certify that the report submitted is our original work; all authors participated in the work in a substansive way; all authors have seen and approved the report as submitted; the text, images, illustrations, and other items included in the manuscript do not carry any ingringement/plagiarism issue upon any existing copyrighted materials."*
+
+## EXECUTIVE SUMMARY:
+
+Airbnbs in New York City have the second highest host profits out of all the cities in the US, with revenues going up to $741,167,296. Average price of a New York Airbnb listing is $157. The market consists of 5 boroughs: Manhattan, Brooklyn, Queens, the Bronx and Staten Island.
+
+## GOALS:
+1. To identify the important features that contribute to achieving a high booking rate on Airbnb, with special emphasis on protecting the investor from investing in a property that would yield low bookings when placed on the Airbnb market.
+2. Build an efficient predictive model using the training data to quantify our analysis by using the most appropriate performance metric.
+
+## RESEARCH QUESTIONS:
+1. Buying and maintaining properties in NYC is expensive.For a risk averse investor, the costs associated with an unprofitable investment is significant and can incur a greater loss as compared to the cost associated with missing out on a potentially profitable opportunity.Is it possible to minimize the risk associated with falsely classifying a property with a low booking rate as one with a high booking rate ?
+
+2. In order to achieve a high booking rate, what our the factors that the investor must consider:
+  a. Before buying the property?
+  b. After buying the property?
+
+## METHODOLOGY:
+1. Data Preparation:-
+  a) Filtering the data based one the randomcontrol variable and contrasting it with simple string processing on      the market variable
+  b) Splitting the amenities into dummy columns for indiviual products and services
+  c) Removing the '$' symbol from the some of the columns and converting into numeric
+  d) Converting host response rate percentages to numeric
+  e) Converting discrete variables to factors
+  f) Recoding some of the factor variables based on domain knowledge
+  g) Dealing with N/A values based on domain knowledge
+  h) For property_types with less than a 1000 observations, create another factor level.
+  i) Converting text based descriptive columns into factors. The idea behind this was to be able to reduce complexity.This would check the importance of properly describing aspects of the properties to guests.
+  j) Specifying missing number of bedrooms and bathrooms as zero
+  k) Specifying missing cleaning fee as mean
+  l) Splitting the market into boroughs based on zipcodes and neighbourhoods incase of missing values.
+  
+```{r, include=FALSE}
+library("tidyverse")
+library("tidymodels")
+library("plotly")
+library("skimr")
+library("lubridate")
+library("car")
+library("caret")
+library("cowplot")
+library("fastDummies")
+library("splitstackshape")
+library("wrapr")
+
+```
+
+```{r, include=FALSE}
+options(yardstick.event_first = FALSE)
+```
+
+```{r Importing data, results="hide"}
+dfaTrain <- read_csv("airbnbTrain.csv")
+dfaTest <- read_csv("airbnbTest.csv")
+```
+```{r}
+#Using string processing to filter New York data
+dfaTrainNewYork <- dfaTrain %>% 
+  filter(market == "New York")
+
+#Using Random Control variable to filter New York data
+dfaTrain<-dfaTrain %>% filter(as.integer(dfaTrain$`{randomControl}`/1000)==116)
+
+dfaTrainDup <- dfaTrain
+```
+
+```{r}
+#They seem to have the same unique states
+unique(dfaTrainNewYork$state)
+```
+
+
+```{r}
+unique(dfaTrain$state)
+```
+```{r}
+#However, dfaTrain (filtered with Random Control) has only one New Jersey zipcode
+dfaTrainNJ <- dfaTrain %>% filter(state=="NJ") 
+unique(dfaTrainNJ$zipcode)
+```
+
+
+```{r}
+#dfaTrainNewYork (filtered with string processing) has many New Jersey zipcodes
+dfaTrainNewYorkNJ <- dfaTrainNewYork %>% filter(state=="NJ")
+unique(dfaTrainNewYorkNJ$zipcode)
+```
+
+
+```{r}
+skim(dfaTrain)
+```
+
+
+
+```{r}
+#Splitting amenities
+sampledf <- dfaTrain %>% 
+  select(id, amenities) %>% 
+  mutate(amenities = gsub('[{]', '', (gsub('[}]', '', amenities))))
+
+df1 <- cSplit_e(sampledf, 'amenities', ',', type= 'character', fill=0, drop=TRUE)
+names(df1) <-  sub('.*_', '', names(df1))
+
+i <- (colSums(Filter(is.numeric, df1)) > 1000)
+df1 <- df1[,i]
+
+df1 <- 
+  df1 %>% 
+  mutate_at(names(df1)[-1] , ~factor(.))
+
+dfaTrain <- merge(dfaTrain, df1, by.x = "id", by.y = "id")
+
+```
+
+
+
+```{r, results='hide'}
+#Removing the '$' symbol
+dfaTrain <-
+  dfaTrain %>%
+  mutate(
+     cleaning_fee = as.numeric(gsub('[$]', '', (gsub('[,]', '', cleaning_fee)))),
+    extra_people = as.numeric(gsub('[$]', '', (gsub('[,]', '', extra_people)))),
+    price = as.numeric(gsub('[$]', '', (gsub('[,]', '', price)))),
+    security_deposit =as.numeric(gsub('[$]', '', (gsub('[,]', '', security_deposit))))
+  )
+#Converting percentage to numeric 
+dfaTrain <-
+  dfaTrain %>%
+  mutate(host_response_rate = as.numeric(gsub('[%]', '', host_response_rate))) %>%
+  mutate(host_response_rate = host_response_rate / 100)
+```
+
+```{r}
+#Converting discrete variables to factors
+cols_to_factor <- c(
+  "cancellation_policy",
+  "host_response_time",
+  "property_type",
+  "room_type",
+  "host_identity_verified",
+  "host_is_superhost",
+  "instant_bookable",
+  "is_location_exact",
+  "requires_license",
+  "bed_type"
+)
+
+dfaTrain <- 
+  dfaTrain %>% 
+  mutate_at(cols_to_factor, ~factor(.))
+```
+
+```{r}
+#Recoding bed_type factor levels
+dfaTrain <- dfaTrain %>%
+  mutate(
+    bed_type = recode_factor(
+      bed_type,
+      Airbed = "Not a Real Bed",
+      Couch = "Not a Real Bed",
+      Futon = "Not a Real Bed",
+      `Pull-out Sofa` = "Not a Real Bed"
+    ))
+#Recoding cancellation_policy factor levels  
+dfaTrain <- dfaTrain %>%
+  mutate(
+    cancellation_policy = recode_factor(
+      cancellation_policy,
+      luxury_no_refund = "luxury",
+      luxury_super_strict_125 = "luxury",
+      luxury_super_strict_95 = "luxury",
+      luxury_moderate = "luxury",
+      strict = "luxury"
+    ))
+
+#Removing NAs
+dfaTrain <- 
+  dfaTrain %>% 
+    replace_na(list(host_response_time = "N/A", host_is_superhost = FALSE, host_identity_verified = FALSE))
+
+```
+
+
+```{r}
+# Creating other property_type
+combinedPropertyType <- pull(dfaTrain %>% 
+  group_by(property_type) %>% 
+  tally() %>% 
+  filter(n < 1000) %>% 
+  arrange(n) %>% 
+  select(property_type) %>% 
+  mutate(property_type = as.character(property_type)), property_type)
+
+dfaTrain <- dfaTrain %>% 
+  mutate(property_type = fct_collapse(property_type, Other = combinedPropertyType))
+
+```
+
+
+
+
+```{r}
+#Converting text based columns into factors
+dfaTrain <- dfaTrain %>% 
+  mutate(host_about = ifelse(is.na(host_about),"FALSE", "TRUE"))
+dfaTrain <- dfaTrain %>% 
+  mutate(interaction = ifelse(is.na(interaction),"FALSE", "TRUE"))
+dfaTrain <- dfaTrain %>% 
+  mutate(neighborhood_overview = ifelse(is.na(neighborhood_overview),"FALSE", "TRUE"))
+dfaTrain <- dfaTrain %>% 
+  mutate(transit = ifelse(is.na(transit),"FALSE", "TRUE"))
+
+dfaTrain <- dfaTrain %>% 
+  mutate(access = ifelse(is.na(access),"FALSE", "TRUE"))
+
+dfaTrain <- dfaTrain %>% 
+  mutate(house_rules = ifelse(is.na(house_rules),"FALSE", "TRUE"))
+
+
+dfaTrain <- dfaTrain %>% 
+  mutate(notes = ifelse(is.na(notes),"FALSE", "TRUE"))
+
+
+dfaTrain <- dfaTrain %>% 
+  mutate(space = ifelse(is.na(space),"FALSE", "TRUE"))
+
+cols_to_factor <- c(
+  "host_about",
+  "space",
+  "notes",
+  "house_rules",
+  "access",
+  "transit",
+  "neighborhood_overview",
+  "interaction"
+)
+
+dfaTrain <- 
+  dfaTrain %>% 
+  mutate_at(cols_to_factor, ~factor(.))
+
+```
+
+```{r}
+#Imputing NA values
+dfaTrain$bedrooms[is.na(dfaTrain$bedrooms)] =0
+dfaTrain$bathrooms[is.na(dfaTrain$bathrooms)] =0
+dfaTrain <- dfaTrain %>% group_by(market) %>%
+mutate(cleaning_fee=ifelse(is.na(cleaning_fee),mean(cleaning_fee,na.rm=TRUE),cleaning_fee)) %>% ungroup()
+```
+
+
+```{r}
+#Dividing into boroughs
+dfaTrain <- dfaTrain %>% mutate(borough=ifelse(substr(dfaTrain$zipcode, 1, 3)  ==100 | substr(dfaTrain$zipcode, 1, 3)  ==101 | substr(dfaTrain$zipcode, 1, 3)  ==102, "Manhattan" , ifelse(substr(dfaTrain$zipcode, 1, 3)  ==112  ,"Brooklyn",
+ifelse(substr(dfaTrain$zipcode, 1, 3)  ==111 | substr(dfaTrain$zipcode, 1, 3)  ==113  | substr(dfaTrain$zipcode, 1, 3)  ==114 | substr(dfaTrain$zipcode, 1, 3)  ==110 | substr(dfaTrain$zipcode, 1, 3)  ==116 ,"Queens",
+ifelse(substr(dfaTrain$zipcode, 1, 3)  ==103 ,"Staten Island",
+ifelse(substr(dfaTrain$zipcode, 1, 3)  ==104  ,"Bronx","NA"))))))
+```
+
+```{r}
+dfTrainNoZip <-dfaTrain %>% filter(is.na(zipcode))
+```
+
+
+```{r}
+dfTrainNoZip$borough <- dfaTrain$borough[match(dfTrainNoZip$neighbourhood, dfaTrain$neighbourhood)]
+```
+
+```{r}
+final <- merge(dfaTrain, dfTrainNoZip[ , c("id", "borough")], by = "id", all = TRUE)
+final$borough <- final$borough.x %?% final$borough.y
+```
+
+```{r}
+final <- final %>% select(-c("borough.x","borough.y"))
+dfaTrain <- final %>% filter(borough!="NA")
+head(dfaTrain)
+```
+## 2. Data Exploration and Visualization
+
+a) Distribution of high and low booking rates across boroughs
+
+```{r}
+dfaTrain %>% 
+  group_by(borough) %>% 
+  summarize(HighBookingYes = length(borough[as.factor(high_booking_rate) == 1]),
+            HighBookingNo = length(borough[as.factor(high_booking_rate) == 0])) %>%
+  mutate(HighBookingYesPct = HighBookingYes*100/(HighBookingYes+HighBookingNo),
+         HighBookingNoPct = HighBookingNo*100/(HighBookingYes+HighBookingNo)) %>%
+  arrange(desc(HighBookingYesPct))
+```
+Manhattan and Brooklyn have the most number of properties. However, this doesn't necessarily translate into a greater percentage of high booking rates. Staten Island with the least number of properties, has a relatively greater percentage of high booking rates.
+
+```{r}
+plotBoroughBooking <- ggplot(data = dfaTrain, aes(x=borough, fill=as.factor(high_booking_rate))) +
+            geom_histogram(color='black',stat='count') +xlab('Borough') + ylab('Number of Properties') +ggtitle("Distribution of booking rates broken down by boroughs")
+plotBoroughBooking
+```
+The properties with high booking rates are less than the ones with low booking rates. This might be due to lesser number of properties having certain desired amenities as compared to the properties with all required amenities.
+ 
+
+
+b) Distribution of prices across boroughs
+```{r}
+plotPriceBorough <- ggplot(data = dfaTrain, aes(x=as.factor(borough), y=price)) +
+            geom_boxplot() + xlab('Borough') +ylab('Price')
+plotPriceBorough
+```
+
+
+```{r}
+plotPriceBorough2 <- ggplot(data = dfaTrain, aes(x=as.factor(borough), y=price)) +
+            geom_boxplot(outlier.shape = NA) + xlab('Borough') +ylab('Price') + ylim(0,500)
+plotPriceBorough2
+```
+Prices seem to be higher and have a wider distribution in Manhattan and Brooklyn. This might also be contributing to a relatively lower percentage of high booking rates in these boroughs.
+
+
+Is there multicollinearity between price and location?
+```{r}
+car::vif(lm(high_booking_rate ~ borough+price,data=dfaTrain))
+```
+Price moves independently of location. There doesn't seem to be direct correlation between location and price.
+
+c) Impact of review scores on booking rate
+
+```{r}
+#Review Scores
+summary(lm(high_booking_rate~review_scores_accuracy+review_scores_checkin+review_scores_cleanliness+review_scores_communication+review_scores_location+review_scores_rating+review_scores_value,data=dfaTrain))
+```
+Except for review_score_value, all other review scores seem to be statistically significant.
+Is there multicollinearity between the review scores ?
+```{r}
+car:: vif(lm(high_booking_rate~review_scores_accuracy+review_scores_checkin+review_scores_cleanliness+review_scores_communication+review_scores_location+review_scores_rating+review_scores_value,data=dfaTrain))
+```
+Yes, there seem to be multicollinearity between the review scores. Possibly, review score rating is the overall rating and hence could be the reason for the multicollinearity.
+
+```{r}
+car:: vif(lm(high_booking_rate~review_scores_accuracy+review_scores_checkin+review_scores_cleanliness+review_scores_communication+review_scores_location+review_scores_value,data=dfaTrain))
+```
+```{r}
+car:: vif(lm(high_booking_rate~review_scores_checkin+review_scores_cleanliness+review_scores_communication+review_scores_location+review_scores_value,data=dfaTrain))
+```
+Also, review_scores_accuracy captures information about how accurately the space was represented by the listing. A part of this information could also be captured by the other review_scores. Hence, we could remove review_score_accuracy as well. 
+```{r}
+summary(lm(high_booking_rate~review_scores_checkin+review_scores_cleanliness+review_scores_communication+review_scores_location+review_scores_value,data=dfaTrain))
+```
+
+```{r}
+lambdaValues <- 10^seq(-3, 3, length = 100)
+set.seed(2020)
+fitLasso <- train(as.factor(high_booking_rate)~review_scores_checkin+review_scores_cleanliness+review_scores_communication+review_scores_location+review_scores_value, family='binomial', data=dfaTrain, method='glmnet', trControl=trainControl(method='cv', number=10), tuneGrid = expand.grid(alpha=0,lambda=lambdaValues),na.action=na.exclude)
+
+#Variable importance complete table
+varImp(fitLasso)$importance %>%    # Add scale=FALSE inside VarImp if you don't want to scale
+  rownames_to_column(var = "Variable") %>%
+  mutate(Importance = scales::percent(Overall/100)) %>% 
+  arrange(desc(Overall)) %>% 
+  as_tibble()
+
+#Variable importance plot with the 25 most important variables
+plot(varImp(fitLasso))    # Change the number of variables the way you like
+
+#Optimum lambda selected by the algorithm
+fitLasso$bestTune$lambda 
+```
+d) Distribution of property types across boroughs
+
+```{r, message=FALSE, warning=FALSE}
+#Dividing into boroughs
+dfaTrainDup <- dfaTrainDup %>% mutate(borough=ifelse(substr(dfaTrainDup$zipcode, 1, 3)  ==100 | substr(dfaTrainDup$zipcode, 1, 3)  ==101 | substr(dfaTrainDup$zipcode, 1, 3)  ==102, "Manhattan" , ifelse(substr(dfaTrainDup$zipcode, 1, 3)  ==112  ,"Brooklyn",
+ifelse(substr(dfaTrainDup$zipcode, 1, 3)  ==111 | substr(dfaTrainDup$zipcode, 1, 3)  ==113  | substr(dfaTrainDup$zipcode, 1, 3)  ==114 | substr(dfaTrainDup$zipcode, 1, 3)  ==110 | substr(dfaTrainDup$zipcode, 1, 3)  ==116 ,"Queens",
+ifelse(substr(dfaTrainDup$zipcode, 1, 3)  ==103 ,"Staten Island",
+ifelse(substr(dfaTrainDup$zipcode, 1, 3)  ==104  ,"Bronx","NA"))))))
+
+
+dfTrainNoZip <-dfaTrainDup %>% filter(is.na(zipcode))
+
+
+
+
+dfTrainNoZip$borough <- dfaTrainDup$borough[match(dfTrainNoZip$neighbourhood, dfaTrainDup$neighbourhood)]
+
+
+final <- merge(dfaTrainDup, dfTrainNoZip[ , c("id", "borough")], by = "id", all = TRUE)
+final$borough <- final$borough.x %?% final$borough.y
+
+
+
+final <- final %>% select(-c("borough.x","borough.y"))
+dfaTrainDup <- final %>% filter(borough!="NA")
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+dfaTrainDup <- dfaTrainDup %>% mutate(total_amenities = ifelse(nchar(amenities)>2, str_count(amenities, ',')+1, 0))
+
+propertydf <-  dfaTrainDup %>% group_by(borough, property_type) %>% summarize(Freq = n())
+propertydf <- propertydf %>% filter(property_type %in% c("Apartment","House","Condominium","Townhouse", "Loft","Guest suite"))
+totalproperty<-  dfaTrainDup %>% filter(property_type %in% c("Apartment","House","Condominium","Townhouse", "Loft","Guest suite"))%>% group_by(borough) %>% summarize(sum = n())
+
+propertyratio <- merge(propertydf, totalproperty, by="borough")
+propertyratio <- propertyratio %>% mutate(ratio = Freq/sum)
+ggplot(propertyratio, aes(x=borough, y=ratio, fill = property_type)) +
+  geom_bar(position = "dodge",stat="identity") + xlab("Borough") + ylab("Count")+
+  scale_fill_discrete(name = "Property Type") + 
+  scale_y_continuous(labels = scales::percent) +
+  ggtitle("Property Types in NYC",
+          subtitle = "Map showing Percentage Count of Property Type by Borough ") +
+          theme(plot.title = element_text(face = "bold")) +
+          theme(plot.subtitle = element_text(face = "bold", color = "grey35")) +
+          theme(plot.caption = element_text(color = "grey68"))+scale_color_gradient(low="#d3cbcb", high="#852eaa")+
+          scale_fill_manual("Property Type", values=c("#e06f69","#357b8a", "#7db5b8", "#59c6f3", "#f6c458","#00FF00")) +
+          xlab("Neighborhood") + ylab("Percentage")
+```
+Considering the most preferred property types in all the boroughs plotted above,we can see that Apartment is the most preferred Property type in Bronx, Brooklyn, Manhattan and Queens.This could be mainly due to the people visiting these boroughs for sight seeing or business trips. On the other hand, Houses are most preferred in Staten Island as they are less expensive than the houses in other boroughs and people visit it mostly for leisure.
+
+e) Room Type Analysis
+Distrbution of properties in NYC based on room type along with the count of the high booking rate properties and it's percentage
+```{r}
+dfr1 <- dfaTrain %>% group_by(room_type) %>% summarise(count_highbooking=sum(high_booking_rate),total=length(high_booking_rate))%>%
+  mutate(Pct = count_highbooking*100/total) %>% arrange(desc(Pct))
+dfr1
+```
+Distribution of Properties based on Room Type
+```{r}
+plot1 <- ggplot(data = dfr1, aes(x=room_type, y=total,fill=room_type)) +
+            geom_bar(stat = "identity", width=0.5,colour="black")+labs(title = "Distribution of Properties based on Room Type",x="Room Type",y="No of Properties")
+plot1
+```
+Percentage of Properties with high booking rate based on Room Type
+```{r}
+plot2 <- ggplot(data = dfr1, aes(x=room_type, y=Pct,fill=room_type)) +
+            geom_bar(stat = "identity", width=0.5,colour="black")+labs(title = "Percentage of Properties with high booking rate based on Room Type",x="Room Type",y="Percentage of Properties")
+plot2
+```
+Distribution of properties with high booking rate in each borough
+```{r}
+dfr4 <- dfaTrain %>% filter(high_booking_rate==1) %>% group_by(borough,room_type)%>% 
+  summarise(total_high_booking_rate=length(high_booking_rate))
+
+plot3 <- ggplot(data = dfr4, aes(x=borough, y=total_high_booking_rate,fill=room_type)) +
+            geom_bar(stat = "identity",position="stack",colour="black")+labs(title="Distribution of properties with high booking rate in each borough",x="Borough",y="Count of high booking rate properties")
+plot3
+
+```
+
+From the above visualisations, we observe that Entire Home/Apartment and Private rooms are the most popular room types offered in NYC and also the most successful ones in terms of high booking rate.
+
+
+If we try going neighbourhood wise,
+
+```{r}
+dfaTrain %>% group_by(room_type,neighbourhood) %>% summarise(count_highbooking=sum(high_booking_rate),total=length(high_booking_rate))%>%
+  mutate(Pct = count_highbooking*100/total) %>% arrange(desc(Pct)) %>% filter(total>10)
+```
+No such clear inference if we go neighbourhood wise.
+
+Distribution of count of high booking properties in each borough and the total properties based on different room types available (Room types having greater than 10 observations)
+```{r}
+dfr2 <- dfaTrain %>% group_by(room_type,borough) %>% summarise(count_highbooking=sum(high_booking_rate),total_properties=length(high_booking_rate))%>%
+  mutate(Percentage_highbooking = count_highbooking*100/total_properties) %>% arrange(desc(Percentage_highbooking)) %>% filter(total_properties>10)
+dfr2
+
+```
+You can see that Entire home/apt and Private room standout as the most successful ones here when we check every borough
+
+Different roomtypes available in each borough along with their success rate in an ascending order
+```{r}
+ dfr3 <- dfaTrain %>% group_by(borough,room_type
+) %>% summarise(count_highbooking=sum(high_booking_rate),total_properties=length(high_booking_rate))%>%
+  mutate(Percentage_highbooking = count_highbooking*100/total_properties)%>% filter(count_highbooking>5) %>% arrange(Percentage_highbooking)
+dfr3
+
+```
+
+
+Shared room in Queens or Broolyn is a bad idea but shared in Manhattan may work because of how expensive the area is.Hotel Rooms in Manhattan would not be a good idea.Entire home/apt and Private rooms seem to be having the best Percentage output but all still in the range of 15%-35%
+
+Most popular room types per borough rank wise and visualisation of the successful listings broken down by Room types in each borough
+```{r}
+ dfr5 <- dfaTrain %>% group_by(borough,room_type
+) %>% summarise(total=length(high_booking_rate)) %>% arrange(borough, desc(total)) %>% mutate(rank=rank(-total))
+dfr5
+```
+Visualisation of the successful listings broken down by room type in each borough
+```{r}
+
+plot4 <- ggplot(data = dfr5, aes(x=borough, y=total,fill=room_type)) +
+            geom_bar(stat = "identity",position="dodge",color='black')+labs(x="Borough",y="Count of successful listings",title="Visualisation of the successful listings broken down by room type in each borough")
+plot4
+```
+Entire home/apt and Private rooms seem to be having the highest count of successful listings and are also the most popular ones in most of the boroughs.This could also tell us that because they do good booking rate wise they are the most popular or vice versa. Nevertheless, Entire home/apt and Private room seem to be the least risk taking option in NYC.
+
+Some guests are social butterflies and use Airbnb to meet new people on their travels. Other guests prefer to be private and keep to themselves.Choosing an Airbnb entire home means you get the whole place to yourself. There is no sharing with hosts or other guests, it’s just you and your party. The Airbnb hosts do not stay with you when you reserve an entire home. 
+
+Why a traveller would prefer an entire home/apartment?
+
+1)No hosts watching your every move.
+2)There’s no interaction.
+3)An entire place is great when you just want somewhere to relax. If you’ve been busy all day, sometimes the last thing you want to do is come back and have to be social, talking to strangers.
+
+Why a traveller would prefer a Private room?
+
+1)They are super cheap.
+2) For people who enjoy interacting with others while also having some sort of privacy.
+3)Your host knows the area and has great advice of things to see.
+
+So depending on which market the investor wants to target he can opt for either of the above options and create a great listing.
+
+From the above analysis we infer that the investor should either go with leasing the property as an Entire Home/Apartment or a Private room in order to get a better chance of getting a higher booking rate
+
+
+f) Super Host
+
+Airbnb awards the title of “Superhost” to a small fraction of its dependable hosts. This program is an incentive program that is a win-win for both the host, Airbnb, and their customers. The superhost gains more business in the form of higher bookings, the customer receives improved service and Airbnb profits with happy satisfied customers.
+
+Airbnb’s site requires a host to satisfy certain requirements to be considered as a super host. We consider two parameters from the dataset and measure the performance: “Response rate” and “Ratings” which range from 0 to 100.
+
+The scatter plot gives a few interesting insights. While most super-hosts are in the region of high-rating:high-response-rate region, we can also see a few hosts with response rates less than 75% which violates the 90%+ critera set by Airbnb although there are a very small fraction of the hosts. In regard to Ratings, almost all hosts are rated 75% and above with a very few below 75%.
+Most Airbnb hosts need to lie in the region of high-rating:high-response region to be considered a super host, but only a small fraction can be super hosts if the conditions are not satisfied.
+
+
+
+Host Response Time
+
+Visualisation of the successful listings broken down by the host response time
+
+```{r}
+dfaTrain$host_response_time<- dfaTrain$host_response_time%>% replace_na("N/A")
+plot5 <- ggplot(data = dfaTrain %>% filter(high_booking_rate==1), aes(x=host_response_time,fill=host_response_time)) +
+            geom_histogram(stat = "count",color='black')+labs(x="Response Time",y="Count of listings with high booking rate ",title="Visualisation of the successful listings broken down by the host response time")
+plot5
+```
+
+Listings having hosts whose response rate is quick, have a better booking rate. This could be another factor that should be considered after the investor has purchased the property. 
+
+Airbnb awards the title of “Superhost” to a small fraction of its dependable hosts. This program is an incentive program that is a win-win for both the host, Airbnb, and their customers. The superhost gains more business in the form of higher bookings, the customer receives improved service and Airbnb profits with happy satisfied customers.
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE }
+dfaTrainS <- dfaTrainDup
+dfaTrainS$host_response_rate = as.integer(gsub("%","",dfaTrainS$host_response_rate))
+dfaTrainS$review_scores_rating = as.integer(gsub("%","",dfaTrainS$review_scores_rating))
+#list1 = listings[!is.na(listings$host_response_rate) & is.na(listings$review_scores_rating),]
+l1 = dfaTrainS[!is.na(dfaTrainS$review_scores_rating),]
+l1 = l1[!is.na(l1$host_is_superhost),]
+l1 = l1[l1$host_is_superhost!='',]
+l1$host_is_superhost[l1$host_is_superhost == "t"] <- "True"
+l1$host_is_superhost[l1$host_is_superhost == "f"] <- "False"
+l1$host_is_superhost <- factor(l1$host_is_superhost)
+colnames(l1)[which(names(l1) == "host_is_superhost")] <- "Superhost"
+superhost = ggplot(l1,aes(host_response_rate,review_scores_rating,color=Superhost))+geom_point(alpha = .5,stroke=0) +xlab("Host Response Rate") +ylab("Avg Ratings")+ ggtitle("What does it take to be a Super Host")
+superhost + ggtitle("What does it take to be a Superhost?",
+          subtitle = "Average Rating by Response Rate") +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(plot.subtitle = element_text(face = "bold", color = "grey35")) +
+  theme(plot.caption = element_text(color = "grey68"))
+```
+
+Airbnb’s site requires a host to satisfy certain requirements to be considered as a super host.We consider two parameters from the dataset and measure the performance: “Response rate” and “Ratings” which range from 0 to 100.
+
+The scatter plot gives a few interesting insights. While most super-hosts are in the region of high-rating:high-response-rate region, we can also see a few hosts with response rates less than 75% which violates the 90%+ critera set by Airbnb although there are a very small fraction of the hosts. In regard to Ratings, almost all hosts are rated 75% and above with a very few below 75%.
+Most Airbnb hosts need to lie in the region of high-rating:high-response region to be considered a super host, but only a small fraction can be super hosts if the conditions are not satisfied.
+
+```{r}
+
+
+```
+
+
+EXTRACTING SUBWAY DATA:
+```{r}
+dfzipS <- read_csv("NYsubway1.csv")
+skim(dfzipS)
+```
+#INTRODUCTION:
+
+MAP FOR MANHATTAN BOROUGH:
+```{r}
+dfM <- dfaTrainDup %>% filter(borough=='Manhattan') 
+```
+```{r}
+library("leaflet")
+
+```
+
+
+```{r}
+#Creating Listings across NYC
+leaflet(dplyr::bind_rows(dfM,dfzipS)) %>%
+ addTiles() %>%
+ addCircleMarkers(data=dfM, color = '#9D7',
+    opacity = 1,~dfM$longitude, ~dfM$latitude,labelOptions = labelOptions(noHide = F),clusterOptions = markerClusterOptions(),popup = paste0( "<br> <b> Price: </b>", dfM$price, "<br/><b> Room Type: </b>", dfM$room_type, "<br/><b> Property Type: </b>", dfM$property_type,"<br> <b> Amenities: </b>", dfM$total_amenities,"<br> <b> Review Score: </b>", dfM$review_scores_value,"<br> <b> Amenities: </b>", dfM$total_amenities,"<br> <b> Booking Rate: </b>", dfM$high_booking_rate
+           )) %>% 
+  addCircleMarkers(data=dfzipS,~longitude, ~latitude,color = '#FA5',labelOptions = labelOptions(noHide = F),clusterOptions = markerClusterOptions(),opacity = 1,popup = paste0( "<br> <b> Station Name: </b>", dfzipS$Stationname)) %>% 
+  setView(-74.00, 40.71, zoom = 12)
+ #%>%
+  #addProviderTiles("CartoDB.Positron")
+```
+
+
+
+MAP FOR BROOKLYN BOROUGH:
+```{r}
+dfB <- dfaTrainDup %>% filter(borough=='Brooklyn')
+```
+
+```{r}
+library("leaflet")
+#Creating Listings across NYC
+leaflet(dplyr::bind_rows(dfB,dfzipS)) %>%
+ addTiles() %>%
+ addCircleMarkers(data=dfB, color = '#9D7',
+    opacity = 1,~longitude, ~latitude,labelOptions = labelOptions(noHide = F),clusterOptions = markerClusterOptions(),popup = paste0( "<br> <b> Price: </b>", dfB$price, "<br/><b> Room Type: </b>", dfB$room_type, "<br/><b> Property Type: </b>", dfB$property_type,"<br> <b> Amenities: </b>", dfB$total_amenities,"<br> <b> Review Score: </b>", dfB$review_scores_value,"<br> <b> Amenities: </b>", dfB$total_amenities,"<br> <b> Booking Rate: </b>", dfB$high_booking_rate
+           )) %>% 
+  addCircleMarkers(data=dfzipS,color = '#FA5',opacity = 1,popup = paste0( "<br> <b> Station Name: </b>", dfzipS$Stationname)) %>% 
+ setView(-74.00, 40.71, zoom = 12)%>%
+  addProviderTiles("CartoDB.Positron")
+```
+MAP FOR QUEENS BOROUGH:
+```{r}
+dfQ <- dfaTrainDup %>% filter(borough=='Queens')
+```
+
+```{r}
+library("leaflet")
+#Creating Listings across NYC
+leaflet(dplyr::bind_rows(dfQ,dfzipS)) %>%
+ addTiles() %>%
+ addCircleMarkers(data=dfQ, color = '#9D7',
+    opacity = 1,~longitude, ~latitude,labelOptions = labelOptions(noHide = F),clusterOptions = markerClusterOptions(),popup = paste0( "<br> <b> Price: </b>", dfQ$price, "<br/><b> Room Type: </b>", dfQ$room_type, "<br/><b> Property Type: </b>", dfQ$property_type,"<br> <b> Amenities: </b>", dfQ$total_amenities,"<br> <b> Review Score: </b>", dfQ$review_scores_value,"<br> <b> Amenities: </b>", dfQ$total_amenities,"<br> <b> Booking Rate: </b>", dfQ$high_booking_rate
+           )) %>% 
+  addCircleMarkers(data=dfzipS,color = '#FA5',opacity = 1,popup = paste0( "<br> <b> Station Name: </b>", dfzipS$Stationname)) %>% 
+  setView(-74.00, 40.71, zoom = 12)
+ #%>%
+  #addProviderTiles("CartoDB.Positron")
+```
+MAP FOR BRONX BOROUGH:
+```{r}
+dfBr <- dfaTrainDup %>% filter(borough=='Bronx')
+```
+
+```{r}
+library("leaflet")
+#Creating Listings across NYC
+leaflet(dplyr::bind_rows(dfBr,dfzipS)) %>%
+ addTiles() %>%
+ addCircleMarkers(data=dfBr, color = '#9D7',
+    opacity = 1,~longitude, ~latitude,labelOptions = labelOptions(noHide = F),clusterOptions = markerClusterOptions(),popup = paste0( "<br> <b> Price: </b>", dfBr$price, "<br/><b> Room Type: </b>", dfBr$room_type, "<br/><b> Property Type: </b>", dfBr$property_type,"<br> <b> Amenities: </b>", dfBr$total_amenities,"<br> <b> Review Score: </b>", dfBr$review_scores_value,"<br> <b> Amenities: </b>", dfBr$total_amenities,"<br> <b> Booking Rate: </b>", dfBr$high_booking_rate
+           )) %>% 
+  addCircleMarkers(data=dfzipS,color = '#FA5',opacity = 1,popup = paste0( "<br> <b> Station Name: </b>", dfzipS$Stationname)) %>% 
+  setView(-74.00, 40.71, zoom = 12)
+```
+MAP FOR STATEN ISLAND BOROUGH:
+```{r}
+dfS <- dfaTrainDup %>% filter(borough=='Staten Island')
+```
+
+```{r}
+library("leaflet")
+#Creating Listings across NYC
+leaflet(dplyr::bind_rows(dfS,dfzipS)) %>%
+ addTiles() %>%
+ addCircleMarkers(data=dfS, color = '#9D7',
+    opacity = 1,~longitude, ~latitude,labelOptions = labelOptions(noHide = F),clusterOptions = markerClusterOptions(),popup = paste0( "<br> <b> Price: </b>", dfS$price, "<br/><b> Room Type: </b>", dfS$room_type, "<br/><b> Property Type: </b>", dfS$property_type,"<br> <b> Amenities: </b>", dfS$total_amenities,"<br> <b> Review Score: </b>", dfS$review_scores_value,"<br> <b> Amenities: </b>", dfS$total_amenities,"<br> <b> Booking Rate: </b>", dfS$high_booking_rate
+           )) %>% 
+  addCircleMarkers(data=dfzipS,color = '#FA5',opacity = 1,popup = paste0( "<br> <b> Station Name: </b>", dfzipS$Stationname)) %>% 
+  setView(-74.00, 40.71, zoom = 12)
+```
+#Propert Types in Each Borough:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+propertydf <-  dfaTrainDup %>% group_by(borough, property_type) %>% summarize(Freq = n())
+propertydf <- propertydf %>% filter(property_type %in% c("Apartment","House","Condominium","Townhouse", "Loft","Guest suite"))
+totalproperty<-  dfaTrainDup %>% filter(property_type %in% c("Apartment","House","Condominium","Townhouse", "Loft","Guest suite"))%>% group_by(borough) %>% summarize(sum = n())
+
+propertyratio <- merge(propertydf, totalproperty, by="borough")
+propertyratio <- propertyratio %>% mutate(ratio = Freq/sum)
+ggplot(propertyratio, aes(x=borough, y=ratio, fill = property_type)) +
+  geom_bar(position = "dodge",stat="identity") + xlab("Borough") + ylab("Count")+
+  scale_fill_discrete(name = "Property Type") + 
+  scale_y_continuous(labels = scales::percent) +
+  ggtitle("Property Types in NYC",
+          subtitle = "Map showing Percentage Count of Property Type by Borough ") +
+          theme(plot.title = element_text(face = "bold")) +
+          theme(plot.subtitle = element_text(face = "bold", color = "grey35")) +
+          theme(plot.caption = element_text(color = "grey68"))+scale_color_gradient(low="#d3cbcb", high="#852eaa")+
+          scale_fill_manual("Property Type", values=c("#e06f69","#357b8a", "#7db5b8", "#59c6f3", "#f6c458","#00FF00")) +
+          xlab("Neighborhood") + ylab("Percentage")
+```
+In the above plot which represents the percentage of property types for each borough, we observe except for staten island, apartments make up for the highest number of observation which is more than 50%. This could be due to the fact that most of the New yorkers (approx 65%) own properties in buldings with more than 10 units i.e., apartments (NYU Furman Center 2017). The same report from  NYU Furman center also explains the phenomenon in staten island where there are less number of apartments and more number of houses. This is due to the fact that staten island has approximately 60% of the properties as houses and just over 15% apartments.
+
+#Choroplethr Map for Location Review Rating:
+```{r}
+library(devtools)
+#install_github('arilamstein/choroplethrZip@v1.5.0')
+# Accessing countys file to get region of each property
+dfzip <- read_csv("NYCountyZip.csv")
+dfzip$zipcode <- as.character(dfzip$zipcode)
+skim(dfzip)
+```
+#Merging the New York dataset with county file:
+```{r}
+dfaTrainDup2 <- merge(dfaTrainDup,dfzip,by.x="zipcode",by.y = "zipcode",all.x= TRUE) 
+dfaTrainDup <- dfaTrainDup2
+```
+#Checking the columns required for plotting a choroplethr map:
+```{r}
+data(county.regions, 
+     package = "choroplethrMaps")
+region <- county.regions %>%
+  filter(state.name == "new york")
+
+region
+```
+#Joining the region data for choroplethr map with our data:
+```{r}
+plotdata <- inner_join(dfaTrainDup, 
+                       region, 
+                       by=c("region" = "region"))
+
+```
+#Plotting the choroplethr map:
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(choroplethr)
+# Which locations have better ratings?
+zipReviews <- plotdata  %>% group_by(region) %>% summarise(avg_loc_review = mean(review_scores_location, na.rm = TRUE))
+colnames(zipReviews) <- c("region","value")
+#zipReviews$region <- as.character(zipReviews$region)
+#nyc_fips = c(36005,36001,36003,36007,36011,36013,36019,36021,36023,36025,36027,36029)
+
+g_locations <- county_choropleth(zipReviews,state_zoom = "new york",title = "Location Review Scores by Region",
+legend = "Average Score") + ggtitle("Which area is the best?",
+          subtitle = "Map showing Average Location Score by Area") +
+  theme(plot.title = element_text(face = "bold")) +
+  theme(plot.subtitle = element_text(face = "bold", color = "grey35")) +
+  theme(plot.caption = element_text(color = "grey68"))+scale_color_gradient(low="#d3cbcb", high="#852eaa")+ scale_fill_brewer("Location Review Score",palette=3)
+ggplotly(g_locations)
+#county_zoom = nyc_fips
+#state_zoom = "new york"
+```
+The map above represents the location reviews based on counties. We observe that Clinton county has the highest location review followed by Albany, and then Delaware.
+
+#Finding nearest subway Station and number of stations near to the property:
+```{r}
+dfzipS$Station = paste(dfzipS$Line, dfzipS$Stationname, sep="-")
+NYCSub_Stations<-aggregate(dfzipS[, 3:4], list(dfzipS$Station), mean)
+colnames(NYCSub_Stations)[1] <- "Station"
+```
+```{r}
+dfaTrainDup$lat_dec<-format(round(dfaTrainDup$latitude, 3), nsmall = 3)
+
+dfaTrainDup$lon_dec<-format(round(dfaTrainDup$longitude, 3), nsmall = 3)
+
+dfaTrainDup$lat_lon = paste(dfaTrainDup$lat_dec, dfaTrainDup$lon_dec, sep="_")
+
+NYCBor_Short<-dfaTrainDup%>%select(lat_lon,lat_dec, lon_dec)
+
+NYCBor_short_dup<-NYCBor_Short[!duplicated(NYCBor_Short), ]
+
+NYCBor_short_dup$shortest_metro=NA
+
+NYCBor_short_dup$number_less_than_1=NA
+```
+
+#CODE FOR FINDING THE NEAREST METRO STATION AND NUMBER OF METRO STATIONS WITHIN A MILE:
+```{r}
+# NYCBor_short_dup$lat_dec<-as.numeric(NYCBor_short_dup$lat_dec)
+# NYCBor_short_dup$lon_dec<-as.numeric(NYCBor_short_dup$lon_dec)
+# 
+# 
+# for (i in 1:nrow(NYCBor_short_dup)){
+#   
+#   #print(i)
+#   
+#   shortest_dist = 1000
+#   
+#   num_less_1 = 0
+#   
+#   for (j in 1:nrow(NYCSub_Stations)){
+#     
+#    distance = sqrt(((NYCBor_short_dup[i,2]-NYCSub_Stations[j,2])*(NYCBor_short_dup[i,2]-NYCSub_Stations[j,2])) +    ((NYCBor_short_dup[i,3]-NYCSub_Stations[j,3])*(NYCBor_short_dup[i,3]-NYCSub_Stations[j,3]))) * 69
+#    
+#   if (distance<=1){
+#     num_less_1 = num_less_1 + 1
+#   }
+#    
+#   if(distance<shortest_dist){
+#     shortest_dist=distance
+#   }
+#    else{
+#      shortest_dist=shortest_dist
+#    }
+#   
+#     
+#   }
+#   
+#   NYCBor_short_dup[i,4] = shortest_dist
+#   
+#   NYCBor_short_dup[i,5] = num_less_1
+# }
+
+```
+
+
+```{r}
+# dfaTrainDup <- merge(dfaTrainDup,NYCBor_short_dup,by.x="lat_lon",by.y = "lat_lon",all.x= TRUE) 
+```
+
+```{r}
+dfaTrainDup <- read_csv("Megha_NYC_Data.csv")
+```
+
+
+```{r}
+dfaTrainDup %>% select(id,borough,shortest_metro,number_less_than_1,high_booking_rate) %>% arrange(desc(number_less_than_1))
+```
+BAR CHART OF PROPORTION OF HIGH BOOKING RATE FOR PROPERTIES WITH METRO STATIONS WITHIN A MILE:
+
+
+
+
+```{r}
+dfaTrainDupPlotMetro <- dfaTrainDup %>% group_by(number_less_than_1)%>%summarize(Freq = mean(high_booking_rate)) %>% 
+  ggplot( aes(x = number_less_than_1, y = Freq))+
+  geom_bar( stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  ggtitle("Proportion of High Booking Rate by Number of metro stations within a mile") +
+          theme(plot.title = element_text(face = "bold")) +
+          theme(plot.subtitle = element_text(face = "bold", color = "grey35")) +
+          xlab("Count of metro stations within a mile for properties") + ylab("High Booking rate Proportion")
+dfaTrainDupPlotMetro
+```
+```{r}
+df_total = data.frame()
+for (val in 0:max(dfaTrainDup$number_less_than_1)){
+  x<-dfaTrainDup %>% filter(number_less_than_1<=val) %>% summarize(meanforlesser=mean(high_booking_rate))
+  y<- dfaTrainDup %>% filter(number_less_than_1>val) %>% summarize(meanforgreater=mean(high_booking_rate))
+  #print(c(val,x$mean, y$mean))
+   df <- data.frame(val,x,y)
+  df_total <- rbind(df_total,df)
+}
+df_total
+```
+This bar graph and the above resultset shows that the booking rate of property decreases as the number of metro stations within a mile increases. This phenomenon s observed until the number of stations is 19. But we also observe that 19 is the inflection point after which the trend reverses i.e., booking rate increases with an increase in number of metro stations within 1 mile. The first phenomenon could be due to people in those regions prefer a lower price of the property than comfort for transiting. The phenomenon revarsal could due to the fact that people might be looking for comfort for transiting than the higher price to be paid for the property. More number of metro stations within a mile may be mostly seen  around Manhattan and Brooklyn where people might visit the places for business purposes and have the need to shuttle more often within NYC.
+
+BAR GRAPH FOR COUNT OF METRO STATIONS WITHIN A MILE FOR PROPERTIES:
+```{r}
+dfaTrainDup$stationsinamile1 <- cut(x=dfaTrainDup$number_less_than_1, breaks=seq(from=-1, to=ceiling(max(dfaTrainDup$number_less_than_1)), by = 5))
+```
+```{r}
+dfaTrainDupPlotMetro1 <- dfaTrainDup %>% group_by(stationsinamile1,high_booking_rate)%>%summarize(Freq = n()) %>% 
+  ggplot( aes(x = stationsinamile1, y = Freq,fill = as.factor(high_booking_rate)))+
+  geom_bar( stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+    ggtitle("Count of Properties by number of metro stations within a mile") +
+          theme(plot.title = element_text(face = "bold")) +
+          theme(plot.subtitle = element_text(face = "bold", color = "grey35")) +
+          xlab("Number of metro stations within a mile") + ylab("Count of properties")
+dfaTrainDupPlotMetro1
+```
+
+```{r}
+dfaTrain <- merge(dfaTrain,dfaTrainDup %>% select(id, recode2), by.x="id", by.y = "id",all.x= TRUE) 
+```
+```{r}
+df <- dfaTrain %>% mutate(stations_in_a_mile = as.factor(recode2))
+```
+
+
+
+This bar graph indicates that as the number of properties dereases with an increase in number of metro stations within a mile of the property. Subsequently, we observe a decrease in high booking rate.
+
+3. Understanding the Variables:-
+  a) Ran Lasso,Ridge
+  b) Checked for Multicolinearity
+  c) Checked the significance of variables
+  d) Used domain knowledge to figure out the important variables
+4. Thinking Process
+  a) Protect the investor from buying a bad property
+  b) Provide options to the investor with properties having a high booking rate
+  c) Maximize profit by analysing the price variation among properties
+  d) Look for factors that 
+  
+5.Linking Kaggle Competition Thought Process with Business Case
+  a) Helped with data preprocessing
+  b) Getting insights about the statistically significant and non-significant variables
+  
+
+
+
+x. RESULTS AND FINDINGS
+```{r}
+set.seed(123)
+dfaTrain <- sample_frac(df, 0.75)
+dfaTest <- dplyr::setdiff(df, dfaTrain)
+```
+
+```{r}
+cols_to_select <- c(
+"high_booking_rate",
+"\"24-hour check-in\"",
+"\"Air conditioning\"",
+"\"Bed linens\"",
+"\"Cable TV\"",
+"\"Cleaning before checkout\"",
+"\"Coffee maker\"",
+"\"Dishes and silverware\"",
+"\"Family/kid friendly\"",
+"\"Free street parking\"",
+"\"Hair dryer\"",
+"\"Host greets you\"",
+"\"Hot water\"",
+"\"Laptop friendly workspace\"",
+"\"Luggage dropoff allowed\"",
+"\"No stairs or steps to enter\"",
+"\"Paid parking off premises\"",
+"\"Pets allowed\"",
+"\"Pets live on this property\"",
+"\"Safety card\"",
+"\"Self check-in\"",
+"\"Smoke detector\"",
+"Dishwasher",
+"Doorman",
+"Elevator",
+"Gym",
+"Heating",
+"Internet",
+"Iron",
+"Kitchen",
+"Microwave",
+"Oven",
+"TV",
+"Washer",
+"property_type",
+"host_is_superhost",
+"room_type",
+"review_scores_checkin",
+"review_scores_location",
+"review_scores_value",
+"borough",
+"price",
+"access",
+"host_response_time",
+"cleaning_fee",
+"host_since",
+"house_rules",
+"minimum_nights",
+"instant_bookable",
+"stations_in_a_mile"
+)
+
+dfaTrain <- dfaTrain %>% 
+  select(cols_to_select)
+dfaTrain <- dfaTrain %>% 
+  mutate(high_booking_rate = as.factor(high_booking_rate))
+```
+
+```{r, results='hide'}
+glmModel <- train(high_booking_rate ~  .,
+                  family = 'binomial',
+                  method = "glm",
+                  data = dfaTrain %>% drop_na())
+```
+
+```{r}
+summary(glmModel)
+```
+
+```{r}
+exp(coef(glm(high_booking_rate ~ ., family = "binomial", data = dfaTrain %>% drop_na())))
+```
+
+```{r}
+skim(dfaTrain)
+```
+
+
+```{r}
+resultsGLM <-
+  glmModel %>%
+  predict(dfaTest %>%  drop_na() , type = 'prob') %>% 
+  bind_cols(dfaTest %>%  drop_na() , predictedClass = .) %>%
+  mutate(predictedClass = as.factor(ifelse(`1` > 0.6 , 1, 0)))
+
+resultsGLM %>%
+  xtabs(~predictedClass+high_booking_rate, .) %>%
+  confusionMatrix(positive = '1')
+```
+
+We developed our business case focussing on avoiding the negative consequences of investing in properties that would yield low booking rates. Therefore we wanted to minimize the FPR . We increase the specificity. The cutoff of 0.6 reduces false positives. 
+(
+(We had to make a tradeoff. Since decreasing false positives increased the false negatives as well. However, for a property based in NY which can be expensive, false positives or incorrectly classifying a property with a low booking rate as one with a high booking rate  would have a greater risk associated with it to the investor.)
+
+
+We have 2 part recommendations to achieve high booking rates. The first is about products to be purchased or factors to be considered before buying the property. The second set focuses on maintenance and marketing of the property along with services to be offered to the guests during their stay. While the first part is important, we observe that more emphasis should be laid on services offered after purchasing the property.
+
+Recommendations Before Buying the Property
+  a) Invest in a smartbox or keypad to facilitate easy self 24 hour check-in 
+  b) Buy properties with free parking
+  c) Provide access to dishes and silverware
+  d) Consider investing in a house over an apartment or a townhouse
+  e) Do not pay a premium on a property unless it is in Manhattan
+  d) Private rooms are preferred over shared rooms
+  
+Recommendations After Buying the Property
+  a) The investor should focus on providing a home like feel and experience to the guests as opposed to just renting out a property
+  b) Properly stating all essential services like internet and heating, describing each aspect of the property such as what areas are accessible etc, will be         appreciated by the guests 
+  c) The investor could consider hiring a full time employee who is greets and interacts well with the hosts.  
+  d) The host’s responses should be prompt, preferably within one hour
+  e) The host should aim to achieve superhost status
+  f) Special emphasis should be laid on appropriately advertising/marketing the available services on the listing
+  g) The full time employee should be responsible for managing the property and provide complete support to the guests 
+  h) The property should be family friendly
+  
+This kind of customized experience in turn will translate into high booking rates and increased profits.
+
+x. REFERENCES
+
+[1]  https://www.citylab.com/equity/2018/03/what-airbnb-did-to-new-york-city/552749/
+      45ad8a941a5a 
+[2]  https://smartasset.com/mortgage/where-do-airbnb-hosts-make-the-most-money 
+[3]  https://ny.curbed.com/2019/12/13/21009872/nyc-home-value-2010s-manhattan-apartments
+
+
+
+
+
+
+
+
+
